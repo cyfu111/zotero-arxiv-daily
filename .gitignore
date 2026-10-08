@@ -15,3 +15,7 @@ test.ipynb
 logs
 models
 test-compose.yml
+# Private delivery state and local previews
+.state/
+digest-preview.html
+__pycache__/

@@ -1,0 +1,6 @@
+# Daily path intentionally excludes the optional multi-GB local LLM build.
+pyzotero>=1.5.25,<2
+python-dotenv>=1.0.1,<2
+gitignore-parser>=0.1.11,<1
+loguru>=0.7.2,<1
+openai>=1.57.0,<3
