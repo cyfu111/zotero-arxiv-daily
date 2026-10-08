@@ -1,169 +1,73 @@
-from paper import ArxivPaper
-import math
-from tqdm import tqdm
+"""Render metadata safely; email never depends on PDF downloads or an LLM."""
+import datetime
 from email.header import Header
 from email.mime.text import MIMEText
-from email.utils import parseaddr, formataddr
+from email.utils import formataddr, make_msgid
+import html
 import smtplib
-import datetime
-import time
-from loguru import logger
-
-framework = """
-<!DOCTYPE HTML>
-<html>
-<head>
-  <style>
-    .star-wrapper {
-      font-size: 1.3em; /* 调整星星大小 */
-      line-height: 1; /* 确保垂直对齐 */
-      display: inline-flex;
-      align-items: center; /* 保持对齐 */
-    }
-    .half-star {
-      display: inline-block;
-      width: 0.5em; /* 半颗星的宽度 */
-      overflow: hidden;
-      white-space: nowrap;
-      vertical-align: middle;
-    }
-    .full-star {
-      vertical-align: middle;
-    }
-  </style>
-</head>
-<body>
-
-<div>
-    __CONTENT__
-</div>
-
-<br><br>
-<div>
-To unsubscribe, remove your email in your Github Action setting.
-</div>
-
-</body>
-</html>
-"""
-
-def get_empty_html():
-  block_template = """
-  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #ddd; border-radius: 8px; padding: 16px; background-color: #f9f9f9;">
-  <tr>
-    <td style="font-size: 20px; font-weight: bold; color: #333;">
-        No Papers Today. Take a Rest!
-    </td>
-  </tr>
-  </table>
-  """
-  return block_template
-
-def get_block_html(title:str, authors:str, rate:str,arxiv_id:str, abstract:str, pdf_url:str, code_url:str=None, affiliations:str=None):
-    code = f'<a href="{code_url}" style="display: inline-block; text-decoration: none; font-size: 14px; font-weight: bold; color: #fff; background-color: #5bc0de; padding: 8px 16px; border-radius: 4px; margin-left: 8px;">Code</a>' if code_url else ''
-    block_template = """
-    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #ddd; border-radius: 8px; padding: 16px; background-color: #f9f9f9;">
-    <tr>
-        <td style="font-size: 20px; font-weight: bold; color: #333;">
-            {title}
-        </td>
-    </tr>
-    <tr>
-        <td style="font-size: 14px; color: #666; padding: 8px 0;">
-            {authors}
-            <br>
-            <i>{affiliations}</i>
-        </td>
-    </tr>
-    <tr>
-        <td style="font-size: 14px; color: #333; padding: 8px 0;">
-            <strong>Relevance:</strong> {rate}
-        </td>
-    </tr>
-    <tr>
-        <td style="font-size: 14px; color: #333; padding: 8px 0;">
-            <strong>arXiv ID:</strong> <a href="https://arxiv.org/abs/{arxiv_id}" target="_blank">{arxiv_id}</a>
-        </td>
-    </tr>
-    <tr>
-        <td style="font-size: 14px; color: #333; padding: 8px 0;">
-            <strong>TLDR:</strong> {abstract}
-        </td>
-    </tr>
-
-    <tr>
-        <td style="padding: 8px 0;">
-            <a href="{pdf_url}" style="display: inline-block; text-decoration: none; font-size: 14px; font-weight: bold; color: #fff; background-color: #d9534f; padding: 8px 16px; border-radius: 4px;">PDF</a>
-            {code}
-        </td>
-    </tr>
-</table>
-"""
-    return block_template.format(title=title, authors=authors,rate=rate,arxiv_id=arxiv_id, abstract=abstract, pdf_url=pdf_url, code=code, affiliations=affiliations)
-
-def get_stars(score:float):
-    full_star = '<span class="full-star">⭐</span>'
-    half_star = '<span class="half-star">⭐</span>'
-    low = 6
-    high = 8
-    if score <= low:
-        return ''
-    elif score >= high:
-        return full_star * 5
-    else:
-        interval = (high-low) / 10
-        star_num = math.ceil((score-low) / interval)
-        full_star_num = int(star_num/2)
-        half_star_num = star_num - full_star_num * 2
-        return '<div class="star-wrapper">'+full_star * full_star_num + half_star * half_star_num + '</div>'
+import ssl
+from urllib.parse import urlsplit
 
 
-def render_email(papers:list[ArxivPaper]):
-    parts = []
-    if len(papers) == 0 :
-        return framework.replace('__CONTENT__', get_empty_html())
-    
-    for p in tqdm(papers,desc='Rendering Email'):
-        rate = get_stars(p.score)
-        author_list = [a.name for a in p.authors]
-        num_authors = len(author_list)
-        
-        if num_authors <= 5:
-            authors = ', '.join(author_list)
-        else:
-            authors = ', '.join(author_list[:3] + ['...'] + author_list[-2:])
-        if p.affiliations is not None:
-            affiliations = p.affiliations[:5]
-            affiliations = ', '.join(affiliations)
-            if len(p.affiliations) > 5:
-                affiliations += ', ...'
-        else:
-            affiliations = 'Unknown Affiliation'
-        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, p.code_url, affiliations))
-        time.sleep(10)
+class DeliveryUncertainError(RuntimeError):
+    """SMTP connection failed during DATA; acceptance cannot be established."""
 
-    content = '<br>' + '</br><br>'.join(parts) + '</br>'
-    return framework.replace('__CONTENT__', content)
 
-def send_email(sender:str, receiver:str, password:str,smtp_server:str,smtp_port:int, html:str,):
-    def _format_addr(s):
-        name, addr = parseaddr(s)
-        return formataddr((Header(name, 'utf-8').encode(), addr))
+def safe_url(value):
+    return html.escape(value, quote=True) if urlsplit(value).scheme in ('http', 'https') else '#'
 
+
+def render_email(papers, warnings=(), summaries=None):
+    esc = html.escape
+    parts = ['<h2>Daily research papers</h2>']
+    if warnings:
+        parts.append('<h3>Delivery / source status</h3><ul>' + ''.join('<li>' + esc(str(w)) + '</li>' for w in warnings) + '</ul>')
+    if not papers:
+        parts.append('<p>No new recommendations in this run. See source status above for any collection failures.</p>')
+    for p in papers:
+        summary = (summaries or {}).get(p.url, p.summary)
+        authors = ', '.join(p.author_names[:8]) + (' et al.' if len(p.author_names) > 8 else '')
+        parts.append(f'<article><h3><a href="{safe_url(p.url)}">{esc(p.title)}</a></h3><p>{esc(p.source)} · {esc(p.published)}<br>{esc(authors)}</p><p>{esc(summary)}</p>')
+        if p.pdf_url:
+            parts.append(f'<p><a href="{safe_url(p.pdf_url)}">PDF</a></p>')
+        parts.append('</article><hr>')
+    parts.append('<p>To change delivery, edit your repository Actions configuration.</p>')
+    return '<!doctype html><html><body>' + '\n'.join(parts) + '</body></html>'
+
+
+def send_email(sender, receiver, password, smtp_server, smtp_port, html, smtp_factory=None):
+    """No retry after DATA: an ambiguous disconnect may already have delivered mail."""
+    if not all((sender, receiver, password, smtp_server, smtp_port)):
+        raise ValueError('SMTP sender, receiver, password, server and port are required')
     msg = MIMEText(html, 'html', 'utf-8')
-    msg['From'] = _format_addr('Github Action <%s>' % sender)
-    msg['To'] = _format_addr('You <%s>' % receiver)
-    today = datetime.datetime.now().strftime('%Y/%m/%d')
-    msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
-
+    msg['From'] = formataddr(('Daily research', sender))
+    msg['To'] = receiver
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y/%m/%d')
+    msg['Subject'] = Header(f'Daily research {today}', 'utf-8').encode()
+    msg['Message-ID'] = make_msgid(domain=sender.split('@')[-1])
+    context = ssl.create_default_context()
+    if smtp_port == 465:
+        server = (smtp_factory or smtplib.SMTP_SSL)(smtp_server, smtp_port, timeout=30, context=context)
+    else:
+        server = (smtp_factory or smtplib.SMTP)(smtp_server, smtp_port, timeout=30)
     try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-    except Exception as e:
-        logger.warning(f"Failed to use TLS. {e}")
-        logger.warning(f"Try to use SSL.")
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-
-    server.login(sender, password)
-    server.sendmail(sender, [receiver], msg.as_string())
-    server.quit()
+        if smtp_port != 465:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+        server.login(sender, password)
+        try:
+            refused = server.sendmail(sender, [receiver], msg.as_string())
+        except (smtplib.SMTPServerDisconnected, OSError) as exc:
+            raise DeliveryUncertainError('SMTP disconnected during DATA; check recipient before retrying') from exc
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
+    finally:
+        # QUIT can fail after successful DATA; that must not turn acceptance into failure.
+        try:
+            server.quit()
+        except (smtplib.SMTPException, OSError):
+            try:
+                server.close()
+            except (smtplib.SMTPException, OSError):
+                pass

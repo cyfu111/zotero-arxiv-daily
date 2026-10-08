@@ -25,6 +25,99 @@
 > [!IMPORTANT]
 > Please keep an eye on this repo, and merge your forked repo in time when there is any update of this upstream, in order to enjoy new features and fix found bugs.
 
+## Reliable daily journal digest (this fork)
+
+The daily pipeline now collects **arXiv, Crossref journal metadata, and publisher RSS**.
+Defaults emphasize spintronics/magnetism/materials, transport theory, Berry curvature,
+spin symmetry classification, spin-space groups and altermagnetism. Zotero similarity
+ranking remains primary; configured topic interests also contribute to ranking.
+
+### What changed
+
+- Query arXiv's date-window Atom API directly, removing the fragile RSS → ID → API
+  round-trip. Re-scan the previous 7 days to recover temporary outages.
+- Query Crossref by **index date and publication date** to find delayed deposits
+  published in the last 90 days. Discover journals from up to 12 Zotero ISSNs plus
+  explicitly configured ISSNs. Default publisher feeds: APS PRB, PR Materials,
+  PR Applied, and Nature Nanotechnology. This uses public metadata, not paywalled text.
+- Request timeouts, polite serial pacing, bounded exponential retry with Retry-After,
+  a 10-minute discovery budget and per-host outage circuit breaker, source isolation, DOI / conservative title-and-author deduplication.
+- Send a daily status even on no-paper days by default. Source failures appear in the
+  email; they are never misreported as a normal empty day. An unavailable embedding
+  model falls back to local lexical ranking, while a Zotero outage uses topic interests.
+- Optional summaries can fail without blocking delivery. **ENRICH_SUMMARIES defaults
+  to false** for reliable, fast delivery; original abstracts (or title-only metadata
+  where publishers omit abstracts) are shown instead. No PDF/source downloads are needed.
+- Secure SMTP with bounded timeouts; save sent identities only after SMTP accepts the
+  message. Successful SMTP acceptance does **not** prove inbox receipt.
+- `--dry-run` and `--debug` never send mail or change the delivery ledger. The test
+  workflow now runs offline regression tests, **not real test emails**.
+
+### Additional repository variables
+
+| Variable | Default / meaning |
+| --- | --- |
+| JOURNAL_QUERIES | Semicolon-separated: `spin orbit torque;Berry curvature transport;spin symmetry classification;spin space groups;altermagnetism;quantum transport theory` |
+| JOURNAL_ISSNS | Optional comma-separated ISSNs, in addition to Zotero-derived ISSNs |
+| JOURNAL_FEEDS | Semicolon-separated HTTPS RSS/Atom URLs; defaults to the four feeds above |
+| SOURCES | `arxiv,crossref,rss`; remove a name to disable that source |
+| LOOKBACK_DAYS | `7`, bounded recovery window after missed runs |
+| JOURNAL_MAX_AGE_DAYS | `90`, maximum publication age for Crossref discovery |
+| SOURCE_MAX_RESULTS | `300` per arXiv query / Crossref query or ISSN; cap warnings appear in mail |
+| SEND_EMPTY | `true`; an explicit false still permits failure-status emails |
+| RANKING | `embedding`; `lexical` avoids the model download |
+| ENRICH_SUMMARIES | `false`; opt in for LLM summaries of title/abstract metadata |
+
+The scheduled workflow runs at **22:17 UTC daily**, with a **23:47 UTC retry**.
+A successfully accepted digest (including an empty or degraded status digest) records
+its UTC date, so the retry does not send a second digest that day. Failed source
+collection is retried the following day within the recovery window. Unsent candidates
+beyond MAX_PAPER_NUM remain eligible on subsequent days within that window; very large
+backlogs may age out, and source result-cap warnings require narrowing the query or
+increasing the cap. This is not an unlimited archive/backfill service.
+
+Actions checks out **this repository/current ref**, not the legacy REPOSITORY/REF
+variable override, so fork fixes are actually executed. The workflow restores the
+latest branch-specific `.state` cache and saves a fresh run/attempt-specific key;
+concurrency prevents overlapping workflow runs. Do not run a second independent
+scheduler against the same mailbox/ledger. Docker now persists `.state` in a bind mount.
+
+**Delivery limits:** GitHub schedules and caches are best-effort. Cache eviction or
+manual deletion loses deduplication history. SMTP and cache writes cannot form an
+atomic transaction: a runner crash after SMTP acceptance but before persisted state
+can duplicate a digest. A detected disconnect during SMTP DATA records an
+`uncertain_delivery` guard and stops further sends until the recipient checks whether
+it arrived and an operator resolves that state. Do not blindly rerun uncertain sends.
+For stronger guarantees use a durable private state store and a mail provider with
+idempotent sending; do not treat this workflow as guaranteed exactly-once delivery.
+
+### Safe verification
+
+```sh
+python -m unittest discover -s tests -v
+python -m compileall -q main.py digest.py construct_email.py recommender.py llm.py
+# No credentials required for public-source smoke test; no SMTP or state mutation:
+python main.py --dry-run --ranking lexical --sources crossref --journal_queries "Berry curvature transport" --source_max_results 10
+```
+
+For production dependencies use `pip install -r requirements-daily.txt`; install
+`sentence-transformers` for embedding ranking. The workflow attempts that optional
+install separately and continues with lexical ranking if it fails. This avoids
+building the optional local LLM. If you explicitly enable local summaries, install
+`llama-cpp-python` separately (or use the legacy full `uv` environment). The scheduled
+workflow supplies all existing SMTP/Zotero secrets without printing their values.
+Before enabling a changed schedule, review the branch, verify CI, then manually run
+the daily workflow against the intended branch and confirm receipt in the configured
+recipient mailbox. Never commit credentials, HTML previews, or delivery state.
+
+Metadata API references: [arXiv API](https://info.arxiv.org/help/api/user-manual.html),
+[Crossref REST guidance](https://www.crossref.org/documentation/retrieve-metadata/rest-api/tips-for-using-the-crossref-rest-api/),
+[APS RSS feeds](https://journals.aps.org/feeds),
+[Nature Nanotechnology RSS](https://www.nature.com/nnano.rss).
+
+The upstream setup guide follows; where it conflicts (debug-email behavior,
+REPOSITORY/REF overrides, no-paper delivery or local LLM defaults), use this section.
+
 ## 🧐 About <a name = "about"></a>
 
 > Track new scientific researches of your interest by just forking (and staring) this repo!😊

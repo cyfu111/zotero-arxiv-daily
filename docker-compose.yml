@@ -20,7 +20,7 @@ services:
       # 可选参数（带默认值）
       - ZOTERO_IGNORE=already_read_papers
       - ARXIV_QUERY=cs.AI+cs.CV+cs.LG+cs.CL
-      - SEND_EMPTY=False
+      - SEND_EMPTY=True
       - MAX_PAPER_NUM=5
       - USE_LLM_API=1
       - OPENAI_API_KEY=sk-your-openai-key-here
@@ -36,6 +36,7 @@ services:
       # - no_proxy=localhost,127.0.0.1,.internal  # 代理排除项
 
     volumes:
+      - ./.state:/app/.state  # delivery ledger survives container recreation
       - ./logs:/var/log/cron  # 日志持久化
       # - ./models:/app/models  # LLM模型缓存，如果你使用本地推理的话
       - /etc/localtime:/etc/localtime:ro  # 同步主机时区

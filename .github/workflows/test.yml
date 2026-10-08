@@ -1,39 +1,21 @@
-name: Test workflow
+name: Offline reliability tests
 on:
   workflow_dispatch:
-
+  push:
+  pull_request:
+permissions:
+  contents: read
 jobs:
-  calculate-and-send:
+  reliability:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          repository: ${{ vars.REPOSITORY }}
-          ref: ${{ vars.REF }}
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: '0.5.4'
-
-      - name: Run script
-        env:
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          ZOTERO_IGNORE: ${{ vars.ZOTERO_IGNORE }}
-          ARXIV_QUERY: ${{ secrets.ARXIV_QUERY }}
-          SEND_EMPTY: ${{ vars.SEND_EMPTY }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SENDER: ${{ secrets.SENDER }}
-          RECEIVER: ${{ secrets.RECEIVER }}
-          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-          MAX_PAPER_NUM: ${{ secrets.MAX_PAPER_NUM }}
-          USE_LLM_API: ${{ secrets.USE_LLM_API }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
-          MODEL_NAME: ${{ secrets.MODEL_NAME }}
-          LANGUAGE: ${{ vars.LANGUAGE }}
-        run: |
-          uv run main.py --debug
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q main.py digest.py construct_email.py recommender.py llm.py
