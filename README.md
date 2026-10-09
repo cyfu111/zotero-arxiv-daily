@@ -34,8 +34,10 @@ ranking remains primary; configured topic interests also contribute to ranking.
 
 ### What changed
 
-- Query arXiv's date-window Atom API directly, removing the fragile RSS → ID → API
-  round-trip. Re-scan the previous 7 days to recover temporary outages.
+- Read full metadata directly from arXiv's official daily Atom announcements, without
+  an RSS → ID → API round-trip. Also query the date-window API to recover the previous
+  7 days. If the API fails, keep available daily announcements and explicitly report
+  incomplete historical coverage. Daily feeds cannot backfill missed days.
 - Query Crossref by **index date and publication date** to find delayed deposits
   published in the last 90 days. Discover journals from up to 12 Zotero ISSNs plus
   explicitly configured ISSNs. Default publisher feeds: APS PRB, PR Materials,
@@ -63,7 +65,7 @@ ranking remains primary; configured topic interests also contribute to ranking.
 | SOURCES | `arxiv,crossref,rss`; remove a name to disable that source |
 | LOOKBACK_DAYS | `7`, bounded recovery window after missed runs |
 | JOURNAL_MAX_AGE_DAYS | `90`, maximum publication age for Crossref discovery |
-| SOURCE_MAX_RESULTS | `300` per arXiv query / Crossref query or ISSN; cap warnings appear in mail |
+| SOURCE_MAX_RESULTS | `300` combined arXiv records / Crossref query or ISSN; cap warnings appear in mail |
 | SEND_EMPTY | `true`; an explicit false still permits failure-status emails |
 | RANKING | `embedding`; `lexical` avoids the model download |
 | ENRICH_SUMMARIES | `false`; opt in for LLM summaries of title/abstract metadata |
@@ -99,6 +101,30 @@ python -m compileall -q main.py digest.py construct_email.py recommender.py llm.
 # No credentials required for public-source smoke test; no SMTP or state mutation:
 python main.py --dry-run --ranking lexical --sources crossref --journal_queries "Berry curvature transport" --source_max_results 10
 ```
+
+### Verifying arXiv retrieval specifically
+
+`python smoke_arxiv.py` runs bounded real requests to the two official arXiv services
+using the configured categories (or the documented defaults locally). It requires
+at least one valid arXiv record, reports API versus daily-feed-only counts, and never
+loads SMTP/Zotero/LLM secrets or reads/writes the delivery ledger. Use `--require-api`
+to require API records specifically; a daily-feed-only success does not establish
+API recovery. An empty feed on a non-announcement day cannot prove retrieval and
+therefore does not pass this smoke test.
+
+The **Live arXiv retrieval (no email)** Actions workflow requires the existing
+`ARXIV_QUERY` secret, so it checks the real production categories from a GitHub runner
+without printing them or sending a digest. HTTP diagnostics record status,
+service/path, page offset, page size and date bounds, without query values or response
+bodies. Offline tests still run without network access. The live test is manual,
+with temporary automatic checks on the `fix-arxiv-retrieval` branch only.
+
+The daily feed's publication field is the announcement date, not original submission
+date. Only new and cross-list announcements are eligible; replacement announcements
+are excluded. API metadata takes precedence for duplicates, and stable arXiv IDs
+share the existing delivery ledger. Daily feed success never advances a recovery
+watermark: every run still queries the rolling lookback window. Result caps and API
+outages remain explicit limitations, not a claim of complete historical coverage.
 
 For production dependencies use `pip install -r requirements-daily.txt`; install
 `sentence-transformers` for embedding ranking. The workflow attempts that optional

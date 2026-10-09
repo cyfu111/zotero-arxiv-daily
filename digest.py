@@ -14,7 +14,7 @@ import re
 import time
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlsplit
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
@@ -78,24 +78,26 @@ class HttpClient:
     def get(self, url, params=None, interval=1.1):
         if params:
             url += '?' + urlencode(params)
-        from urllib.parse import urlsplit
         host = urlsplit(url).netloc
+        pace_key = 'arxiv.org' if host in ('export.arxiv.org', 'rss.arxiv.org') else host
         if host in self.blocked_hosts:
             raise RuntimeError('Source host circuit open after exhausted retries')
         for attempt in range(self.attempts):
             if self.clock() >= self.deadline:
                 raise TimeoutError('Collection time budget exhausted')
-            remaining = interval - (self.clock() - self.last_request.get(host, -1e10))
+            remaining = interval - (self.clock() - self.last_request.get(pace_key, -1e10))
             if remaining > 0:
                 if self.clock() + remaining >= self.deadline:
                     raise TimeoutError('Collection time budget exhausted')
                 self.sleep(remaining)
-            self.last_request[host] = self.clock()
+            self.last_request[pace_key] = self.clock()
             try:
                 request = Request(url, headers={'User-Agent': 'zotero-journal-daily/0.4 (https://github.com/cyfu111/zotero-arxiv-daily)', 'Accept': 'application/json, application/atom+xml, application/xml'})
                 with self.opener(request, timeout=min(30, max(1, self.deadline - self.clock()))) as response:
                     return response.read()
             except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                path = '/atom/[categories]' if host == 'rss.arxiv.org' else urlsplit(url).path
+                LOG.warning('HTTP request failed: %s %s (%s), attempt %d/%d', host, path, failure_label(exc), attempt + 1, self.attempts)
                 if isinstance(exc, HTTPError) and exc.code not in (408, 429, 500, 502, 503, 504):
                     raise
                 if attempt + 1 >= self.attempts:
@@ -121,36 +123,162 @@ class HttpClient:
                 self.sleep(delay)
 
 
-def fetch_arxiv(client, categories, since, until, max_results=1000):
+def arxiv_categories(categories):
     categories = [x.strip() for x in re.split(r'[+,\s]+', categories or '') if x.strip()]
     if not categories or any(not re.fullmatch(r'[A-Za-z0-9.-]+', x) for x in categories):
         raise ValueError('ARXIV_QUERY must contain arXiv category names separated by + or commas')
+    return list(dict.fromkeys(categories))
+
+
+def failure_label(exc):
+    # Do not log whole request URLs, query values, response bodies or credentials.
+    if isinstance(exc, HTTPError):
+        return f'HTTP {exc.code}'
+    return type(exc).__name__
+
+
+def arxiv_feed_root(body):
+    root = ET.fromstring(body)
+    if root.tag != ATOM + 'feed':
+        raise ValueError('arXiv response is not an Atom feed')
+    for entry in root.findall(ATOM + 'entry'):
+        if '/api/errors' in entry.findtext(ATOM + 'id', '') or entry.findtext(ATOM + 'title', '').lower() == 'error':
+            raise ValueError('arXiv returned an API error')
+    return root
+
+
+def arxiv_paper(entry, *, daily=False):
+    raw_id = entry.findtext(ATOM + 'id', '')
+    identifier = re.sub(r'v\d+$', '', raw_id.removeprefix('oai:arXiv.org:').rsplit('/abs/', 1)[-1])
+    if not re.fullmatch(r'(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})', identifier):
+        raise ValueError('arXiv entry has an invalid identifier')
+    title = plain(entry.findtext(ATOM + 'title'))
+    summary = plain(entry.findtext(ATOM + 'summary'))
+    if not title or not summary:
+        raise ValueError('arXiv entry is missing title or abstract')
+    authors = [plain(a.findtext(ATOM + 'name')) for a in entry.findall(ATOM + 'author')]
+    if daily:
+        summary = re.sub(r'^arXiv:\S+\s+Announce Type:\s*[^\n]+\n\s*Abstract:\s*', '', summary)
+        creators = entry.findtext('{http://purl.org/dc/elements/1.1/}creator', '')
+        authors = [x.strip() for x in creators.split(',') if x.strip()] or authors
+    return Paper(title, summary, 'https://arxiv.org/abs/' + identifier,
+                 'arXiv (daily feed)' if daily else 'arXiv',
+                 entry.findtext(ATOM + 'published', '')[:10],
+                 normalize_doi(entry.findtext(ARXIV + 'doi') or entry.findtext(ARXIV + 'DOI')),
+                 'arxiv:' + identifier, authors, 'https://arxiv.org/pdf/' + identifier)
+
+
+def fetch_arxiv_daily(client, categories, since, until, max_results=1000):
+    """Official daily announcements include full abstracts; never re-query IDs via API.
+
+    Daily published timestamps are announcement dates, not original submission dates.
+    This feed cannot backfill a historical window, even when its HTTP request succeeds.
+    """
+    categories = arxiv_categories(categories)
+    url = 'https://rss.arxiv.org/atom/' + '+'.join(categories)
+    root = arxiv_feed_root(client.get(url, interval=3.1))
+    entries = root.findall(ATOM + 'entry')
+    papers, seen, notices = [], set(), []
+    for entry in entries:
+        # Replacements may concern years-old papers. Cross-list announcements are new
+        # to this category and are deduplicated against already sent arXiv identities.
+        kind = entry.findtext(ARXIV + 'announce_type', '').lower()
+        if kind not in ('new', 'cross'):
+            continue
+        stamp = entry.findtext(ATOM + 'published', '')
+        try:
+            announced = datetime.fromisoformat(stamp.replace('Z', '+00:00')).date()
+        except ValueError:
+            raise ValueError('arXiv daily entry has no valid announcement date')
+        if not since <= announced <= until:
+            continue
+        paper = arxiv_paper(entry, daily=True)
+        if paper.identifier not in seen:
+            papers.append(paper)
+            seen.add(paper.identifier)
+    papers.sort(key=lambda p: (p.published, p.identifier), reverse=True)
+    if len(entries) >= 2000 or len(papers) > max_results:
+        notices.append('arXiv daily feed result limit reached; category coverage may be incomplete')
+    LOG.info('arXiv daily feed: %d eligible records (announcement dates; not historical backfill)', len(papers[:max_results]))
+    return papers[:max_results], notices
+
+
+def fetch_arxiv_api(client, categories, since, until, max_results=1000):
+    categories = arxiv_categories(categories)
     query = '(' + ' OR '.join('cat:' + x for x in categories) + ')'
     query += f' AND submittedDate:[{since:%Y%m%d}0000 TO {until:%Y%m%d}2359]'
-    papers = []
-    warnings = []
-    for start in range(0, max_results, 100):
+    papers, warnings, seen = [], [], set()
+    start = 0
+    while start < max_results:
         try:
-            body = client.get('https://export.arxiv.org/api/query', {'search_query': query, 'start': start, 'max_results': min(100, max_results-start), 'sortBy': 'submittedDate', 'sortOrder': 'descending'}, interval=3.1)
-            root = ET.fromstring(body)
+            size = min(100, max_results - start)
+            LOG.info('arXiv API page: offset=%d size=%d window=%s..%s', start, size, since, until)
+            body = client.get('https://export.arxiv.org/api/query', {'search_query': query, 'start': start, 'max_results': size, 'sortBy': 'submittedDate', 'sortOrder': 'descending'}, interval=3.1)
+            root = arxiv_feed_root(body)
             entries = root.findall(ATOM + 'entry')
             for entry in entries:
-                url = entry.findtext(ATOM + 'id', '')
-                if '/api/errors' in url or entry.findtext(ATOM + 'title', '').lower() == 'error':
-                    raise ValueError('arXiv returned an API error')
-                identifier = re.sub(r'v\d+$', '', url.rsplit('/abs/', 1)[-1])
-                papers.append(Paper(plain(entry.findtext(ATOM + 'title')), plain(entry.findtext(ATOM + 'summary')), 'https://arxiv.org/abs/' + identifier, 'arXiv', entry.findtext(ATOM + 'published', '')[:10], normalize_doi(entry.findtext(ARXIV + 'doi')), 'arxiv:' + identifier, [plain(a.findtext(ATOM + 'name')) for a in entry.findall(ATOM + 'author')], 'https://arxiv.org/pdf/' + identifier))
-            total = int(root.findtext('{http://a9.com/-/spec/opensearch/1.1/}totalResults', str(len(entries))))
-            if start + len(entries) >= total or not entries:
+                paper = arxiv_paper(entry)
+                if paper.identifier not in seen:
+                    papers.append(paper)
+                    seen.add(paper.identifier)
+            total = int(root.findtext('{http://a9.com/-/spec/opensearch/1.1/}totalResults', str(start + len(entries))))
+            # Increment by returned records, not the requested size: short pages must
+            # not silently skip offsets. Every response consumes a bounded page budget.
+            start += len(entries)
+            if start >= total:
                 break
-            if start + len(entries) >= max_results:
+            if not entries:
+                warnings.append('arXiv API returned an empty page before totalResults; recovery window incomplete')
+                break
+            if start >= max_results:
                 warnings.append('arXiv result limit reached; narrow categories or increase SOURCE_MAX_RESULTS')
         except Exception as exc:
             if not papers:
                 raise
-            warnings.append('arXiv pagination interrupted: ' + type(exc).__name__)
+            warnings.append('arXiv API pagination interrupted (' + failure_label(exc) + '); recovery window incomplete')
             break
+    LOG.info('arXiv API: %d records fetched', len(papers))
     return papers, warnings
+
+
+def fetch_arxiv(client, categories, since, until, max_results=1000):
+    """Daily announcements plus date-window recovery, using two official interfaces.
+
+    Fetch announcements first, independently of API availability. This is not endpoint
+    rotation after a denial: each service is queried once with its own bounded retry
+    policy, and the API's cooldown/circuit breaker is never cleared.
+    """
+    arxiv_categories(categories)
+    if max_results < 1 or since > until:
+        raise ValueError('Invalid arXiv result limit or date window')
+    daily, recovered, warnings = [], [], []
+    daily_error = api_error = None
+    try:
+        daily, notices = fetch_arxiv_daily(client, categories, since, until, max_results)
+        warnings.extend(notices)
+    except Exception as exc:
+        daily_error = exc
+        LOG.warning('arXiv daily feed unavailable (%s)', failure_label(exc))
+    try:
+        recovered, notices = fetch_arxiv_api(client, categories, since, until, max_results)
+        warnings.extend(notices)
+    except Exception as exc:
+        api_error = exc
+        LOG.warning('arXiv API unavailable (%s)', failure_label(exc))
+    if api_error:
+        if daily_error:
+            raise RuntimeError(f'arXiv daily feed failed ({failure_label(daily_error)}); API failed ({failure_label(api_error)})') from api_error
+        warnings.append(f'arXiv API unavailable ({failure_label(api_error)}); daily feed supplied {len(daily)} records only. The {since}..{until} recovery window is incomplete; a daily feed cannot backfill missed days.')
+    elif daily_error:
+        warnings.append(f'arXiv daily feed unavailable ({failure_label(daily_error)}); using API submission-date results')
+    # Prefer submission-date API metadata for overlapping records. Identity keys match
+    # both interfaces, so switching interfaces cannot resend the same preprint.
+    merged = {p.identifier: p for p in daily}
+    merged.update({p.identifier: p for p in recovered})
+    papers = sorted(merged.values(), key=lambda p: (p.published, p.identifier), reverse=True)
+    if len(papers) > max_results:
+        warnings.append('arXiv combined result limit reached; coverage is incomplete and capped candidates may age out')
+    return papers[:max_results], warnings
 
 
 def crossref_date(item):
