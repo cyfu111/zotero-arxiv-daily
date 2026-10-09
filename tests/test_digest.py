@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from digest import HttpClient, Paper, fetch_arxiv, fetch_crossref, fetch_rss, new_papers, load_state
+from digest import HttpClient, Paper, fetch_arxiv_api, fetch_crossref, fetch_rss, new_papers, load_state
 from main import parse_args, run
 from construct_email import render_email, send_email
 
@@ -48,15 +48,15 @@ class DiscoveryTests(unittest.TestCase):
     def test_arxiv_atom_recovers_window_without_rss_lookup(self):
         xml = b'''<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom"><entry><id>http://arxiv.org/abs/2610.00001v2</id><title>Transport</title><summary>Abstract</summary><published>2026-10-07T00:00:00Z</published><author><name>A</name></author><arxiv:doi>10.1234/ABC</arxiv:doi></entry></feed>'''
         client = FakeClient([xml])
-        papers, notices = fetch_arxiv(client, 'cond-mat.mes-hall+cond-mat.str-el', date(2026, 10, 1), TODAY)
+        papers, notices = fetch_arxiv_api(client, 'cond-mat.mes-hall+cond-mat.str-el', date(2026, 10, 1), TODAY)
         self.assertEqual(papers[0].doi, '10.1234/abc')
         self.assertEqual(papers[0].identifier, 'arxiv:2610.00001')
         self.assertIn('submittedDate:[202610010000 TO 202610082359]', client.calls[0][1]['search_query'])
         self.assertFalse(notices)
 
     def test_arxiv_partial_page_failure_keeps_results(self):
-        xml = b'''<feed xmlns="http://www.w3.org/2005/Atom" xmlns:o="http://a9.com/-/spec/opensearch/1.1/"><o:totalResults>200</o:totalResults><entry><id>http://arxiv.org/abs/2610.00001</id><title>Transport</title></entry></feed>'''
-        papers, notices = fetch_arxiv(FakeClient([xml, TimeoutError()]), 'cond-mat.mes-hall', TODAY, TODAY, 200)
+        xml = b'''<feed xmlns="http://www.w3.org/2005/Atom" xmlns:o="http://a9.com/-/spec/opensearch/1.1/"><o:totalResults>200</o:totalResults><entry><id>http://arxiv.org/abs/2610.00001</id><title>Transport</title><summary>Abstract</summary></entry></feed>'''
+        papers, notices = fetch_arxiv_api(FakeClient([xml, TimeoutError()]), 'cond-mat.mes-hall', TODAY, TODAY, 200)
         self.assertEqual(len(papers), 1)
         self.assertTrue(notices)
 
