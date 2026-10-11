@@ -138,7 +138,7 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.state = str(Path(self.directory.name) / 'state.json')
         with patch.dict('os.environ', {}, clear=True):
-            self.args = parse_args(['--state_file', self.state, '--ranking', 'lexical', '--zotero_id', 'x', '--zotero_key', 'y'])
+            self.args = parse_args(['--state_file', self.state, '--ranking', 'lexical', '--zotero_id', 'x', '--zotero_key', 'y', '--receiver', 'primary@example.com'])
         self.sent = []
     def deliver(self, *args): self.sent.append(args[-1])
     def invoke(self, candidates, warnings=(), today=TODAY, deliver=None):
@@ -159,7 +159,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_source_outage_sends_status_and_next_day_recovers(self):
         self.invoke([], ['arXiv unavailable'])
-        self.assertIn('arXiv unavailable', self.sent[0])
+        self.assertIn('collection was incomplete', self.sent[0])
+        self.assertNotIn('arXiv unavailable', self.sent[0])
         self.invoke([paper()], today=date(2026, 10, 9))
         self.assertIn(paper().title, self.sent[1])
         self.invoke([paper()], today=date(2026, 10, 10))
