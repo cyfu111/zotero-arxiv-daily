@@ -11,10 +11,10 @@ import sys
 
 from digest import (HttpClient, fallback_rank, fetch_arxiv, fetch_crossref, fetch_rss,
                     load_state, new_papers, record_delivery, save_state)
-from construct_email import DeliveryUncertainError, render_email, send_email
+from construct_email import DeliveryUncertainError, render_email, send_email, parse_recipients
 
 LOG = logging.getLogger(__name__)
-DEFAULT_QUERIES = 'spin orbit torque;Berry curvature transport;spin symmetry classification;spin space groups;altermagnetism;quantum transport theory'
+DEFAULT_QUERIES = 'spintronics;altermagnetic materials;spin orbit torque;Berry curvature transport;spin symmetry classification;spin space groups;altermagnetism;quantum transport theory'
 DEFAULT_FEEDS = 'https://feeds.aps.org/rss/recent/prb.xml;https://feeds.aps.org/rss/recent/prmaterials.xml;https://feeds.aps.org/rss/recent/prapplied.xml;https://www.nature.com/nnano.rss'
 
 
@@ -33,7 +33,7 @@ def parse_args(argv=None):
     def add(name, default=None, type=str, **kwargs):
         value = os.environ.get(name.upper())
         parser.add_argument('--' + name, type=type, default=type(value) if value else default, **kwargs)
-    for name in ('zotero_id', 'zotero_key', 'zotero_ignore', 'smtp_server', 'sender', 'receiver', 'sender_password', 'openai_api_key'):
+    for name in ('zotero_id', 'zotero_key', 'zotero_ignore', 'smtp_server', 'sender', 'receiver', 'additional_receivers', 'sender_password', 'openai_api_key'):
         add(name)
     add('smtp_port', 465, int)
     add('arxiv_query', 'cond-mat.mes-hall+cond-mat.mtrl-sci+cond-mat.str-el')
@@ -145,7 +145,7 @@ def run(args, *, client=None, today=None, corpus_loader=get_zotero_corpus, deliv
     papers = new_papers(candidates, state)
     # Explicit interests supplement Zotero so theoretical work is not displaced by an experimental library.
     interest = {'data': {'title': args.journal_queries.replace(';', ' '), 'abstractNote': args.journal_queries.replace(';', ' '), 'dateAdded': today.isoformat() + 'T00:00:00Z'}}
-    ranking_corpus = corpus + [interest]
+    ranking_corpus = corpus or [interest]
     if papers:
         try:
             if args.ranking == 'lexical':
@@ -159,7 +159,10 @@ def run(args, *, client=None, today=None, corpus_loader=get_zotero_corpus, deliv
         interest_words = set(re.findall(r'\w{4,}', args.journal_queries.casefold())) - {'theory', 'groups', 'classification', 'quantum'}
         for p in papers:
             words = set(re.findall(r'\w{4,}', (p.title + ' ' + p.summary).casefold()))
-            p.score += min(2.0, 0.4 * len(words & interest_words))
+            p.topic_bonus = min(2.0, 0.4 * len(words & interest_words))
+            p.score += p.topic_bonus
+            if p.semantic_score is not None:
+                p.relevance_basis = "Zotero semantic relevance" if corpus else "Topic semantic relevance"
         papers.sort(key=lambda p: p.score, reverse=True)
         if args.max_paper_num != -1:
             papers = papers[:args.max_paper_num]
@@ -180,7 +183,9 @@ def run(args, *, client=None, today=None, corpus_loader=get_zotero_corpus, deliv
                     break
         except Exception as exc:
             warnings.append(f'Optional summarizer unavailable ({type(exc).__name__}); retained abstracts')
-    html = render_email(papers, warnings, summaries)
+    for notice in warnings:
+        LOG.warning("Digest notice: %s", notice)
+    html = render_email(papers, notices, summaries)
     if args.dry_run:
         Path(args.output).write_text(html)
         LOG.info('Dry run: wrote %s (%d papers, %d status notices); no email or state changes', args.output, len(papers), len(warnings))
@@ -189,7 +194,8 @@ def run(args, *, client=None, today=None, corpus_loader=get_zotero_corpus, deliv
         LOG.info('No new papers; SEND_EMPTY disabled')
         return 0
     try:
-        deliver(args.sender, args.receiver, args.sender_password, args.smtp_server, args.smtp_port, html)
+        recipients = parse_recipients(args.receiver, args.additional_receivers)
+        deliver(args.sender, recipients, args.sender_password, args.smtp_server, args.smtp_port, html)
     except DeliveryUncertainError:
         state['uncertain_delivery'] = today.isoformat()
         save_state(args.state_file, state)

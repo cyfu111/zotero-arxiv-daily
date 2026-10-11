@@ -44,6 +44,9 @@ class Paper:
     pdf_url: str = ''
     score: float = 0.0
     aliases: list[str] = field(default_factory=list)
+    semantic_score: float | None = None
+    topic_bonus: float = 0.0
+    relevance_basis: str = ""
 
     @property
     def authors(self):
@@ -384,6 +387,9 @@ def fallback_rank(papers, corpus):
     for p in papers:
         words = set(re.findall(r'\w{3,}', (p.title + ' ' + p.summary).casefold()))
         p.score = 10 * len(words & tokens) / max(1, len(words))
+        p.semantic_score = None
+        p.topic_bonus = 0.0
+        p.relevance_basis = "lexical"
     return sorted(papers, key=lambda p: p.score, reverse=True)
 
 

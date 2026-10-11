@@ -36,7 +36,7 @@ ranking remains primary; configured topic interests also contribute to ranking.
 
 - Read full metadata directly from arXiv's official daily Atom announcements, without
   an RSS → ID → API round-trip. Also query the date-window API to recover the previous
-  7 days. If the API fails, keep available daily announcements and explicitly report
+  7 days. If the API fails, keep available daily announcements and log
   incomplete historical coverage. Daily feeds cannot backfill missed days.
 - Query Crossref by **index date and publication date** to find delayed deposits
   published in the last 90 days. Discover journals from up to 12 Zotero ISSNs plus
@@ -44,9 +44,11 @@ ranking remains primary; configured topic interests also contribute to ranking.
   PR Applied, and Nature Nanotechnology. This uses public metadata, not paywalled text.
 - Request timeouts, polite serial pacing, bounded exponential retry with Retry-After,
   a 10-minute discovery budget and per-host outage circuit breaker, source isolation, DOI / conservative title-and-author deduplication.
-- Send a daily status even on no-paper days by default. Source failures appear in the
-  email; they are never misreported as a normal empty day. An unavailable embedding
-  model falls back to local lexical ranking, while a Zotero outage uses topic interests.
+- Keep the email focused on papers: no digest banner or technical-status block.
+  Diagnostics remain in Actions logs. Empty failed collection gets one concise notice.
+  Semantic relevance stars use the original 6–8 scale, independently of topic bonuses.
+  An unavailable embedding model uses clearly labeled keyword ranking without stars;
+  a Zotero outage uses separately labeled topic-semantic relevance.
 - Optional summaries can fail without blocking delivery. **ENRICH_SUMMARIES defaults
   to false** for reliable, fast delivery; original abstracts (or title-only metadata
   where publishers omit abstracts) are shown instead. No PDF/source downloads are needed.
@@ -55,17 +57,25 @@ ranking remains primary; configured topic interests also contribute to ranking.
 - `--dry-run` and `--debug` never send mail or change the delivery ledger. The test
   workflow now runs offline regression tests, **not real test emails**.
 
+### Additional recipient
+
+Set the optional **Actions repository secret `ADDITIONAL_RECEIVERS`** to one or more
+comma- or semicolon-separated email addresses. The existing `RECEIVER` is retained,
+duplicate addresses are removed, and no addresses belong in public source code.
+Partial SMTP acceptance stops automatic retries to prevent duplicate mail; inspect
+delivery before resolving the existing uncertainty guard.
+
 ### Additional repository variables
 
 | Variable | Default / meaning |
 | --- | --- |
-| JOURNAL_QUERIES | Semicolon-separated: `spin orbit torque;Berry curvature transport;spin symmetry classification;spin space groups;altermagnetism;quantum transport theory` |
+| JOURNAL_QUERIES | Semicolon-separated: `spintronics;altermagnetic materials;spin orbit torque;Berry curvature transport;spin symmetry classification;spin space groups;altermagnetism;quantum transport theory` |
 | JOURNAL_ISSNS | Optional comma-separated ISSNs, in addition to Zotero-derived ISSNs |
 | JOURNAL_FEEDS | Semicolon-separated HTTPS RSS/Atom URLs; defaults to the four feeds above |
 | SOURCES | `arxiv,crossref,rss`; remove a name to disable that source |
 | LOOKBACK_DAYS | `7`, bounded recovery window after missed runs |
 | JOURNAL_MAX_AGE_DAYS | `90`, maximum publication age for Crossref discovery |
-| SOURCE_MAX_RESULTS | `300` combined arXiv records / Crossref query or ISSN; cap warnings appear in mail |
+| SOURCE_MAX_RESULTS | `300` combined arXiv records / Crossref query or ISSN; cap warnings appear in logs |
 | SEND_EMPTY | `true`; an explicit false still permits failure-status emails |
 | RANKING | `embedding`; `lexical` avoids the model download |
 | ENRICH_SUMMARIES | `false`; opt in for LLM summaries of title/abstract metadata |
