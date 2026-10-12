@@ -1,10 +1,6 @@
-name: Send emails daily
+name: Verify additional recipient (manual only)
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 22 * * *'
-    # Retry infrastructure/SMTP failures; the daily ledger prevents a second accepted digest.
-    - cron: '47 23 * * *'
 
 permissions:
   contents: read
@@ -71,8 +67,8 @@ jobs:
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SENDER: ${{ secrets.SENDER }}
-          RECEIVER: ${{ secrets.RECEIVER }}
-          ADDITIONAL_RECEIVERS: ${{ secrets.ADDITIONAL_RECEIVERS }}
+          RECEIVER: ${{ secrets.ADDITIONAL_RECEIVERS }}
+          ADDITIONAL_RECEIVERS: ''
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           MAX_PAPER_NUM: ${{ secrets.MAX_PAPER_NUM }}
           USE_LLM_API: ${{ secrets.USE_LLM_API }}
