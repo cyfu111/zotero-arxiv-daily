@@ -72,6 +72,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SENDER: ${{ secrets.SENDER }}
           RECEIVER: ${{ secrets.RECEIVER }}
+          ADDITIONAL_RECEIVERS: ${{ secrets.ADDITIONAL_RECEIVERS }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           MAX_PAPER_NUM: ${{ secrets.MAX_PAPER_NUM }}
           USE_LLM_API: ${{ secrets.USE_LLM_API }}

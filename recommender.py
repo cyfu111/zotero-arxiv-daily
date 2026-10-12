@@ -15,5 +15,8 @@ def rerank_paper(candidate:list[Paper],corpus:list[dict],model:str='avsolatorio/
     scores = (sim * time_decay_weight).sum(axis=1) * 10 # [n_candidate]
     for s,c in zip(scores,candidate):
         c.score = s.item()
+        c.semantic_score = c.score
+        c.topic_bonus = 0.0
+        c.relevance_basis = "semantic"
     candidate = sorted(candidate,key=lambda x: x.score,reverse=True)
     return candidate

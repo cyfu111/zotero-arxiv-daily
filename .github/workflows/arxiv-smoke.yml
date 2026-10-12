@@ -1,0 +1,32 @@
+name: Live arXiv retrieval (no email)
+on:
+  workflow_dispatch:
+  push:
+    branches: ['fix-arxiv-retrieval']
+    paths:
+      - digest.py
+      - smoke_arxiv.py
+      - tests/test_arxiv.py
+      - .github/workflows/arxiv-smoke.yml
+permissions:
+  contents: read
+concurrency:
+  group: arxiv-smoke-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  arxiv-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline regressions
+        run: python -m unittest discover -s tests -v
+      - name: Fetch real arXiv metadata with production categories
+        env:
+          ARXIV_QUERY: ${{ secrets.ARXIV_QUERY }}
+          LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS }}
+          SOURCE_MAX_RESULTS: ${{ vars.SOURCE_MAX_RESULTS }}
+        run: python smoke_arxiv.py --require-config
